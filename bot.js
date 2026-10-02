@@ -119,7 +119,13 @@ app.listen(PORT, () => {
   console.log(`\n🌐 الموقع: http://localhost:${PORT}`);
 });
 
-const token = process.env.DISCORD_TOKEN;
+let token = process.env.DISCORD_TOKEN;
+
+// حاول طرق مختلفة للحصول على التوكن
+if (!token) {
+  token = process.env.discord_token || process.env.DISCORD_TOKEN;
+}
+
 if (!token) {
   console.error('❌ DISCORD_TOKEN غير موجود!');
   process.exit(1);
