@@ -1,106 +1,90 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client } = require('discord.js-selfbot-v13');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const cors = require('cors');
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
-  ]
-});
 
 const CHANNEL_ID = '1553814727401144393';
 const DATA_FILE = 'messages.json';
+const MAX_HISTORY = 500;
+
+const client = new Client({ checkUpdate: false });
 let messages = [];
 
-function loadMessages() {
+try {
   if (fs.existsSync(DATA_FILE)) {
-    try {
-      messages = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
-    } catch (e) {
-      messages = [];
-    }
+    messages = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
   }
+} catch (e) {
+  messages = [];
 }
 
-function saveMessages() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(messages, null, 2));
+function save() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(messages));
 }
 
-loadMessages();
-
-client.on('ready', async () => {
-  console.log('\n✅ البوت متصل بنجاح!');
-  console.log(`📱 متصل كـ: ${client.user.username}`);
-
-  try {
-    const channel = await client.channels.fetch(CHANNEL_ID);
-    console.log(`📍 القناة: #${channel.name}`);
-
-    console.log('📥 جاري تحميل الرسائل...');
-    const history = await channel.messages.fetch({ limit: 100 });
-
-    history.reverse().forEach(msg => {
-      if (!messages.find(m => m.id === msg.id) && !msg.author.bot) {
-        messages.push({
-          id: msg.id,
-          author: msg.author.username,
-          avatar: msg.author.displayAvatarURL({ dynamic: true }),
-          content: msg.content,
-          timestamp: msg.createdTimestamp,
-          attachments: msg.attachments.map(att => ({
-            name: att.name,
-            url: att.url
-          }))
-        });
-      }
-    });
-
-    saveMessages();
-    console.log(`✨ تم حفظ ${messages.length} رسالة\n`);
-
-  } catch (error) {
-    console.error('❌ خطأ:', error.message);
-  }
-});
-
-client.on('messageCreate', (msg) => {
-  if (msg.author.bot || msg.channelId !== CHANNEL_ID) return;
-  if (messages.find(m => m.id === msg.id)) return;
-
-  const newMessage = {
+function toRecord(msg) {
+  return {
     id: msg.id,
     author: msg.author.username,
-    avatar: msg.author.displayAvatarURL({ dynamic: true }),
+    avatar: msg.author.displayAvatarURL(),
     content: msg.content,
     timestamp: msg.createdTimestamp,
-    attachments: msg.attachments.map(att => ({
-      name: att.name,
-      url: att.url
+    attachments: [...msg.attachments.values()].map(a => ({
+      name: a.name,
+      url: a.url
     }))
   };
+}
 
-  messages.unshift(newMessage);
-  saveMessages();
-  console.log(`✏️ رسالة جديدة من ${msg.author.username}`);
+client.on('ready', async () => {
+  console.log('Connected as', client.user.username);
+  try {
+    const channel = await client.channels.fetch(CHANNEL_ID);
+    let before;
+    let fetched = 0;
+    while (fetched < MAX_HISTORY) {
+      const batch = await channel.messages.fetch({ limit: 100, before });
+      if (batch.size === 0) break;
+      batch.forEach(m => {
+        if (!messages.find(x => x.id === m.id)) messages.push(toRecord(m));
+      });
+      fetched += batch.size;
+      before = batch.last().id;
+    }
+    messages.sort((a, b) => b.timestamp - a.timestamp);
+    save();
+    console.log('Loaded', messages.length, 'messages');
+  } catch (err) {
+    console.error('History error:', err.message);
+  }
 });
 
-client.on('error', error => {
-  console.error('❌ خطأ:', error);
+client.on('messageCreate', msg => {
+  if (msg.channelId !== CHANNEL_ID) return;
+  if (messages.find(x => x.id === msg.id)) return;
+  messages.unshift(toRecord(msg));
+  save();
+});
+
+client.on('messageUpdate', (oldMsg, newMsg) => {
+  if (newMsg.channelId !== CHANNEL_ID) return;
+  const m = messages.find(x => x.id === newMsg.id);
+  if (m && newMsg.content != null) {
+    m.content = newMsg.content;
+    save();
+  }
+});
+
+client.on('messageDelete', msg => {
+  if (msg.channelId !== CHANNEL_ID) return;
+  messages = messages.filter(x => x.id !== msg.id);
+  save();
 });
 
 const app = express();
-app.use(cors());
-app.use(express.json());
 app.use(express.static('public'));
 
-app.get('/api/messages', (req, res) => {
-  res.json(messages);
-});
+app.get('/api/messages', (req, res) => res.json(messages));
 
 app.get('/api/stats', (req, res) => {
   res.json({
@@ -114,21 +98,11 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`\n🌐 الموقع: http://localhost:${PORT}`);
-});
+app.listen(process.env.PORT || 3000, () => console.log('Web server running'));
 
-let token = process.env.DISCORD_TOKEN;
-
-// حاول طرق مختلفة للحصول على التوكن
+const token = (process.env.DISCORD_TOKEN || '').trim();
 if (!token) {
-  token = process.env.discord_token || process.env.DISCORD_TOKEN;
-}
-
-if (!token) {
-  console.error('❌ DISCORD_TOKEN غير موجود!');
+  console.error('DISCORD_TOKEN missing');
   process.exit(1);
 }
-
 client.login(token);
