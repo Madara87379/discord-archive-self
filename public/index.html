@@ -3,48 +3,70 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>أرشيف القناة</title>
+  <title>Discord Archive</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 20px; }
+    .container { max-width: 800px; margin: 0 auto; }
+    header { background: #1e293b; padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; }
+    h1 { color: #38bdf8; font-size: 22px; margin-bottom: 8px; }
+    .status { color: #94a3b8; font-size: 14px; }
+    .msg-card { background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 12px; border-right: 4px solid #38bdf8; }
+    .author { font-weight: bold; color: #38bdf8; margin-bottom: 5px; }
+    .content { font-size: 15px; line-height: 1.5; white-space: pre-wrap; }
+    .time { font-size: 11px; color: #64748b; margin-top: 8px; }
+    #loading { text-align: center; color: #a855f7; padding: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>أرشيف رسائل الديسكورد</h1>
+      <div id="stats" class="status">جاري تحميل الإحصائيات...</div>
+    </header>
+
+    <div id="loading">جاري جلب الرسائل...</div>
+    <div id="messages-list"></div>
+  </div>
+
+  <script>
+    async function loadData() {
+      const statsEl = document.getElementById('stats');
+      const listEl = document.getElementById('messages-list');
+      const loadingEl = document.getElementById('loading');
+
+      try {
+        // جلب الإحصائيات
+        const statsRes = await fetch('/api/stats');
+        const stats = await statsRes.json();
+        statsEl.innerHTML = `عدد الرسائل: <strong>${stats.totalMessages}</strong> | حالة البوت: <strong>${stats.status}</strong>`;
+
+        // جلب الرسائل
+        const msgRes = await fetch('/api/messages');
+        const messages = await msgRes.json();
+
+        loadingEl.style.display = 'none';
+
+        if (!messages || messages.length === 0) {
+          listEl.innerHTML = '<div style="text-align:center; color:#94a3b8;">لا توجد رسائل أرشفة حتى الآن.</div>';
+          return;
+        }
+
+        listEl.innerHTML = messages.map(m => `
+          <div class="msg-card">
+            <div class="author">${m.author || 'مستخدم غير معروف'}</div>
+            <div class="content">${m.content || '<i>(رسالة فارغة أو تحتوي على مرفقات فقط)</i>'}</div>
+            <div class="time">${new Date(m.timestamp).toLocaleString('ar-EG')}</div>
+          </div>
+        `).join('');
+
+      } catch (err) {
+        loadingEl.style.color = '#ef4444';
+        loadingEl.innerHTML = 'حدث خطأ أثناء تحميل البيانات: ' + err.message;
+      }
     }
 
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-      min-height: 100vh;
-      padding: 20px;
-      direction: rtl;
-    }
-
-    .container {
-      max-width: 900px;
-      margin: 0 auto;
-    }
-
-    header {
-      text-align: center;
-      color: white;
-      margin-bottom: 30px;
-    }
-
-    h1 {
-      font-size: 2.5em;
-      margin-bottom: 15px;
-      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-    }
-
-    .status-bar {
-      display: flex;
-      gap: 15px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-
-    .status-item {
-      display: inline-block;
-      padding: 8px 16px;
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 20px;
+    loadData();
+  </script>
+</body>
+</html>
