@@ -3,18 +3,18 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
-// إعدادات القناة والحد الأقصى للرسائل القديمة
+// إعدادات القناة والحد الأقصى للرسائل
 const CHANNEL_ID = (process.env.CHANNEL_ID || '1553814727401144393').trim();
 const DATA_FILE = 'messages.json';
-const MAX_HISTORY = 2000;
+const MAX_HISTORY = 1000; // حد آمن لمنع فصل الجلسة من ديسكورد
 
-const client = new Client({ checkUpdate: false });
+const client = new Client({ checkUpdate: false, retryLimit: 5 });
 let messages = [];
 
-// دالة تأخير زمني لتفادي حظر ديسكورد (Rate Limit)
+// دالة التأخير الزمني بالملي ثانية
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// قراءة البيانات المحفوظة محلياً إن وجدت
+// تحميل البيانات المحفوظة محلياً إن وجدت
 try {
   if (fs.existsSync(DATA_FILE)) {
     messages = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
@@ -33,7 +33,7 @@ function save() {
   }
 }
 
-// تحويل كائن الرسالة إلى صيغة مبسطة للأرشيف
+// تحويل كائن الرسالة إلى صيغة مبسطة
 function toRecord(msg) {
   return {
     id: msg.id,
@@ -48,38 +48,32 @@ function toRecord(msg) {
   };
 }
 
-// دالة جلب الأرشيف والرسائل القديمة فور بدء تشغيل البوت
+// التعامل مع انقطاع الاتصال
+client.on('disconnect', () => {
+  console.warn('Bot disconnected! Attempting to reconnect automatically...');
+});
+
+// عند جاهزية البوت واتصاله بنجاح
 client.on('ready', async () => {
   console.log('Connected successfully as:', client.user.username);
   try {
-    // 1. محاولة الوصول للقناة عبر الـ Cache أو عبر Fetch الشبكة
     let channel = client.channels.cache.get(CHANNEL_ID);
     if (!channel) {
-      channel = await client.channels.fetch(CHANNEL_ID).catch(err => {
-        console.error(`Failed to fetch channel network-side: ${err.message}`);
-        return null;
-      });
+      channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
     }
 
-    // 2. التحقق من وجود القناة
-    if (!channel) {
-      console.error(`CRITICAL: Channel with ID ${CHANNEL_ID} was not found! Ensure account '${client.user.username}' is in the server.`);
-      return;
-    }
-
-    // 3. التحقق من أن القناة نصية وتدعم الرسائل
-    if (!channel.messages) {
-      console.error(`CRITICAL: ID ${CHANNEL_ID} is not a text channel or has no message history access!`);
+    if (!channel || !channel.messages) {
+      console.error(`Cannot fetch channel or missing permissions for ID: ${CHANNEL_ID}`);
       return;
     }
 
     let before;
     let fetched = 0;
-    console.log('Starting fetch of historical messages...');
+    console.log('Starting safe fetch of historical messages...');
 
     while (fetched < MAX_HISTORY) {
-      const batch = await channel.messages.fetch({ limit: 100, before });
-      if (batch.size === 0) break;
+      const batch = await channel.messages.fetch({ limit: 50, before }).catch(() => null);
+      if (!batch || batch.size === 0) break;
 
       batch.forEach(m => {
         if (!messages.find(x => x.id === m.id)) messages.push(toRecord(m));
@@ -87,21 +81,21 @@ client.on('ready', async () => {
 
       fetched += batch.size;
       before = batch.last().id;
-      console.log(`Fetched ${fetched} historical messages so far...`);
+      console.log(`Fetched ${fetched} historical messages safely...`);
 
-      // تأخير ثانيتين بين كل 100 رسالة لحماية الحساب من التقييد
-      await sleep(2000);
+      // تأخير 3 ثوانٍ بين الطلبات لحماية الحساب من حظر الجلسة
+      await sleep(3000);
     }
 
     messages.sort((a, b) => b.timestamp - a.timestamp);
     save();
-    console.log('Successfully loaded total:', messages.length, 'messages');
+    console.log('Successfully updated archive total:', messages.length, 'messages');
   } catch (err) {
     console.error('History fetch error:', err.message);
   }
 });
 
-// استقبال الرسائل الجديدة مباشرة
+// الاستماع للرسائل الجديدة لحظياً
 client.on('messageCreate', msg => {
   if (msg.channelId !== CHANNEL_ID) return;
   if (messages.find(x => x.id === msg.id)) return;
@@ -141,7 +135,7 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-// الصفحة الرئيسية
+// الواجهة الرئيسية لشبكة الأرشيف
 app.get('/', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -171,7 +165,7 @@ app.get('/', (req, res) => {
         <h1>أرشيف رسائل الديسكورد</h1>
         <p>البوت يعمل بنجاح ويقوم بأرشفة الرسائل.</p>
         <div class="status ${client.isReady() ? 'online' : 'offline'}">
-          الحالة: ${client.isReady() ? 'متصل وجاري الأرشفة' : 'جاري الاتصال...'}
+          الحالة: ${client.isReady() ? 'connected' : 'disconnected'}
         </div>
         <div class="stat-box">
           <p>📌 <strong>عدد الرسائل الحالية:</strong> ${messages.length}</p>
@@ -184,19 +178,24 @@ app.get('/', (req, res) => {
   `);
 });
 
-// استماع السيرفر على منفذ Railway
+// التشغيل على منفذ Railway
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Web server running on port ${PORT}`);
+  console.log(`Web server listening on port ${PORT}`);
 });
 
-// قراءة التوكن وتسجيل الدخول
-const token = (process.env.DISCORD_TOKEN || '').trim();
-if (!token) {
-  console.error('CRITICAL ERROR: DISCORD_TOKEN is missing in Environment Variables!');
-  process.exit(1);
+// دالة تسجيل الدخول مع المحاولة الآلية في حال الفشل
+function loginBot() {
+  const token = (process.env.DISCORD_TOKEN || '').trim();
+  if (!token) {
+    console.error('CRITICAL ERROR: DISCORD_TOKEN is missing in Environment Variables!');
+    return;
+  }
+  client.login(token).catch(err => {
+    console.error('Failed to log in to Discord:', err.message);
+    console.log('Retrying login in 10 seconds...');
+    setTimeout(loginBot, 10000);
+  });
 }
 
-client.login(token).catch(err => {
-  console.error('Failed to log in to Discord:', err.message);
-});
+loginBot();
