@@ -4,14 +4,14 @@ const fs = require('fs');
 const path = require('path');
 
 // إعدادات القناة والحد الأقصى للرسائل القديمة
-const CHANNEL_ID = process.env.CHANNEL_ID || '1553814727401144393';
+const CHANNEL_ID = (process.env.CHANNEL_ID || '1553814727401144393').trim();
 const DATA_FILE = 'messages.json';
-const MAX_HISTORY = 2000; // تم زيادة حد جلب الرسائل القديمة إلى 2000
+const MAX_HISTORY = 2000;
 
 const client = new Client({ checkUpdate: false });
 let messages = [];
 
-// دالة تأخير زمني بالملي ثانية لتفادي حظر ديسكورد (Rate Limit)
+// دالة تأخير زمني لتفادي حظر ديسكورد (Rate Limit)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // قراءة البيانات المحفوظة محلياً إن وجدت
@@ -52,9 +52,24 @@ function toRecord(msg) {
 client.on('ready', async () => {
   console.log('Connected successfully as:', client.user.username);
   try {
-    const channel = await client.channels.fetch(CHANNEL_ID);
+    // 1. محاولة الوصول للقناة عبر الـ Cache أو عبر Fetch الشبكة
+    let channel = client.channels.cache.get(CHANNEL_ID);
     if (!channel) {
-      console.error('Channel not found! Check CHANNEL_ID or permissions.');
+      channel = await client.channels.fetch(CHANNEL_ID).catch(err => {
+        console.error(`Failed to fetch channel network-side: ${err.message}`);
+        return null;
+      });
+    }
+
+    // 2. التحقق من وجود القناة
+    if (!channel) {
+      console.error(`CRITICAL: Channel with ID ${CHANNEL_ID} was not found! Ensure account '${client.user.username}' is in the server.`);
+      return;
+    }
+
+    // 3. التحقق من أن القناة نصية وتدعم الرسائل
+    if (!channel.messages) {
+      console.error(`CRITICAL: ID ${CHANNEL_ID} is not a text channel or has no message history access!`);
       return;
     }
 
@@ -74,7 +89,7 @@ client.on('ready', async () => {
       before = batch.last().id;
       console.log(`Fetched ${fetched} historical messages so far...`);
 
-      // تأخير ثانيتين بين كل دفعة لحماية الحساب من التقييد وجلب الأرشيف كاملاً
+      // تأخير ثانيتين بين كل 100 رسالة لحماية الحساب من التقييد
       await sleep(2000);
     }
 
@@ -86,7 +101,7 @@ client.on('ready', async () => {
   }
 });
 
-// استقبال واستماع الرسائل الجديدة مباشرة
+// استقبال الرسائل الجديدة مباشرة
 client.on('messageCreate', msg => {
   if (msg.channelId !== CHANNEL_ID) return;
   if (messages.find(x => x.id === msg.id)) return;
@@ -115,7 +130,7 @@ client.on('messageDelete', msg => {
 const app = express();
 app.use(express.static('public'));
 
-// مسارات الـ API للحصول على البيانات بصيغة JSON
+// مسارات الـ API
 app.get('/api/messages', (req, res) => res.json(messages));
 
 app.get('/api/stats', (req, res) => {
@@ -126,7 +141,7 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-// الواجهة الرئيسية لتفادي ظهور الشاشة الزرقاء عرض محتوى الأرشيف
+// الصفحة الرئيسية
 app.get('/', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -154,7 +169,7 @@ app.get('/', (req, res) => {
     <body>
       <div class="card">
         <h1>أرشيف رسائل الديسكورد</h1>
-        <p>البوت يعمل بنجاح ويقوم بأرشفة الرسائل القديمة والجديدة.</p>
+        <p>البوت يعمل بنجاح ويقوم بأرشفة الرسائل.</p>
         <div class="status ${client.isReady() ? 'online' : 'offline'}">
           الحالة: ${client.isReady() ? 'متصل وجاري الأرشفة' : 'جاري الاتصال...'}
         </div>
@@ -169,7 +184,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// استماع السيرفر على منفذ Railway المخصص
+// استماع السيرفر على منفذ Railway
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Web server running on port ${PORT}`);
